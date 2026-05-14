@@ -33,6 +33,9 @@ export async function apiRequest<T>(
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
     headers
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "Network request failed";
+    throw new ApiError(`Cannot reach backend API at ${API_URL}. ${message}`, 0);
   });
 
   if (!response.ok) {
