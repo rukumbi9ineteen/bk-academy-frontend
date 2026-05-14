@@ -294,6 +294,7 @@ main {
 .form-panel {
   display: grid;
   gap: 1.25rem;
+  align-content: start;
 }
 
 form,
@@ -304,6 +305,44 @@ label {
 
 form {
   gap: 1rem;
+}
+
+.step-card {
+  gap: 1.15rem;
+}
+
+.apply-stepper {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  padding: 0.45rem;
+  border-radius: 999px;
+  background: rgba(1, 27, 57, 0.06);
+}
+
+.apply-stepper span {
+  border-radius: 999px;
+  padding: 0.8rem 1rem;
+  color: rgba(1, 27, 57, 0.58);
+  font-weight: 900;
+  text-align: center;
+}
+
+.apply-stepper span.current {
+  background: var(--bk-white);
+  color: var(--bk-blue);
+  box-shadow: 0 8px 24px rgba(1, 27, 57, 0.08);
+}
+
+.apply-stepper span.complete {
+  background: rgba(235, 156, 32, 0.16);
+  color: #8a5708;
+}
+
+.form-hint {
+  margin: -0.25rem 0 0;
+  color: rgba(1, 27, 57, 0.62);
+  line-height: 1.65;
 }
 
 label {

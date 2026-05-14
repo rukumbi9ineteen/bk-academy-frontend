@@ -175,6 +175,7 @@ function ApplyPage({
   session: AuthSession | null;
   onLogin: (session: AuthSession) => void;
 }) {
+  const activeStep = session ? 2 : 1;
   const [account, setAccount] = useState({
     firstName: "",
     lastName: "",
@@ -187,10 +188,24 @@ function ApplyPage({
 
   async function createAccount(event: FormEvent) {
     event.preventDefault();
+    const firstName = account.firstName.trim();
+    const lastName = account.lastName.trim();
+    const email = account.email.trim().toLowerCase();
+
+    if (!firstName || !lastName) {
+      setStatus("Please enter both your first name and last name.");
+      return;
+    }
+
     setStatus("Creating applicant account...");
     try {
-      await registerApplicant(account);
-      const nextSession = await login(account.email, account.password);
+      await registerApplicant({
+        firstName,
+        lastName,
+        email,
+        password: account.password
+      });
+      const nextSession = await login(email, account.password);
       onLogin(nextSession);
       setStatus("Account created. You can now submit your application.");
     } catch (error) {
@@ -238,55 +253,96 @@ function ApplyPage({
       </section>
 
       <section className="panel form-panel">
-        {!session && (
-          <form onSubmit={createAccount}>
-            <h2>Create applicant account</h2>
+        <div className="apply-stepper" aria-label="Application steps">
+          <span className={activeStep === 1 ? "current" : "complete"}>1. Account</span>
+          <span className={activeStep === 2 ? "current" : ""}>2. Application</span>
+        </div>
+
+        {!session ? (
+          <form className="step-card" onSubmit={createAccount}>
+            <div>
+              <p className="eyebrow">Step 1</p>
+              <h2>Create applicant account</h2>
+              <p className="form-hint">
+                First create your secure account. After this succeeds, we will unlock the CV and motivation form.
+              </p>
+            </div>
             <div className="two-column">
               <label>
                 First name
-                <input value={account.firstName} onChange={(event) => setAccount({ ...account, firstName: event.target.value })} required />
+                <input
+                  value={account.firstName}
+                  onChange={(event) => setAccount({ ...account, firstName: event.target.value })}
+                  placeholder="e.g. Shema"
+                  required
+                />
               </label>
               <label>
                 Last name
-                <input value={account.lastName} onChange={(event) => setAccount({ ...account, lastName: event.target.value })} required />
+                <input
+                  value={account.lastName}
+                  onChange={(event) => setAccount({ ...account, lastName: event.target.value })}
+                  placeholder="e.g. Mutabazi"
+                  required
+                />
               </label>
             </div>
             <label>
               Email
-              <input value={account.email} onChange={(event) => setAccount({ ...account, email: event.target.value })} type="email" required />
+              <input
+                value={account.email}
+                onChange={(event) => setAccount({ ...account, email: event.target.value })}
+                placeholder="you@example.com"
+                type="email"
+                required
+              />
             </label>
             <label>
               Password
-              <input value={account.password} onChange={(event) => setAccount({ ...account, password: event.target.value })} type="password" required />
+              <input
+                value={account.password}
+                onChange={(event) => setAccount({ ...account, password: event.target.value })}
+                minLength={8}
+                placeholder="At least 8 characters"
+                type="password"
+                required
+              />
             </label>
-            <button className="secondary-action wide" type="submit">Create and continue</button>
+            <button className="primary-action wide" type="submit">Create account</button>
+            {status && <p className="form-status">{status}</p>}
+          </form>
+        ) : (
+          <form className="step-card" onSubmit={submitApplication}>
+            <div>
+              <p className="eyebrow">Step 2</p>
+              <h2>Submit application</h2>
+              <p className="form-hint">
+                You are signed in as {session.user.email}. Add your motivation statement and attach your CV.
+              </p>
+            </div>
+            <label>
+              Motivation statement
+              <textarea
+                value={motivationStatement}
+                onChange={(event) => setMotivationStatement(event.target.value)}
+                rows={6}
+                required
+                placeholder="Tell us why BK Academy is the right next step for you."
+              />
+            </label>
+            <label>
+              CV file
+              <input
+                accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                onChange={(event) => setCvFile(event.target.files?.[0] ?? null)}
+                type="file"
+                required
+              />
+            </label>
+            <button className="primary-action wide" type="submit">Submit to BK Academy</button>
+            {status && <p className="form-status">{status}</p>}
           </form>
         )}
-
-        <form onSubmit={submitApplication}>
-          <h2>Submit application</h2>
-          <label>
-            Motivation statement
-            <textarea
-              value={motivationStatement}
-              onChange={(event) => setMotivationStatement(event.target.value)}
-              rows={6}
-              required
-              placeholder="Tell us why BK Academy is the right next step for you."
-            />
-          </label>
-          <label>
-            CV file
-            <input
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(event) => setCvFile(event.target.files?.[0] ?? null)}
-              type="file"
-              required
-            />
-          </label>
-          <button className="primary-action wide" type="submit">Submit to BK Academy</button>
-          {status && <p className="form-status">{status}</p>}
-        </form>
       </section>
     </main>
   );
