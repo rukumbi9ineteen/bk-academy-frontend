@@ -1,6 +1,10 @@
 import type { ApiErrorResponse, AuthSession } from "./types";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
+const API_URL = import.meta.env.VITE_API_URL;
+
+if (!API_URL) {
+  throw new Error("VITE_API_URL is not configured. Set it to your backend URL ending in /api/v1.");
+}
 
 export class ApiError extends Error {
   constructor(
