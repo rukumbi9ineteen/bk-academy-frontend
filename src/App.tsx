@@ -9,7 +9,7 @@ import type {
   UserRole
 } from "./types";
 
-type Route = "home" | "apply" | "login" | "student" | "admin" | "executive";
+type Route = "home" | "apply" | "login" | "student" | "admin" | "executive" | "trainer";
 
 type NavItem = {
   id: Route;
@@ -24,7 +24,8 @@ const routes: NavItem[] = [
   { id: "apply", label: "My Application", roles: ["applicant"] },
   { id: "student", label: "Dashboard", roles: ["student"] },
   { id: "admin", label: "Admin", roles: ["admin"] },
-  { id: "executive", label: "Executive", roles: ["executive"] }
+  { id: "executive", label: "Executive", roles: ["executive"] },
+  { id: "trainer", label: "Trainer", roles: ["trainer"] }
 ];
 
 const routeAccess: Record<Route, UserRole[] | "public"> = {
@@ -33,7 +34,36 @@ const routeAccess: Record<Route, UserRole[] | "public"> = {
   login: "public",
   student: ["student"],
   admin: ["admin"],
-  executive: ["executive"]
+  executive: ["executive"],
+  trainer: ["trainer"]
+};
+
+type ListResponse<T> = {
+  items: T[];
+  total: number;
+};
+
+type CohortItem = {
+  id: string;
+  name: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+};
+
+type CourseItem = {
+  id: string;
+  title: string;
+  description: string;
+  durationWeeks: number;
+};
+
+type ModuleItem = {
+  id: string;
+  courseId: string;
+  title: string;
+  description: string;
+  orderIndex: number;
 };
 
 export function App() {
@@ -100,6 +130,7 @@ export function App() {
       {route === "student" && <StudentPage session={session} />}
       {route === "admin" && <AdminPage session={session} />}
       {route === "executive" && <ExecutivePage session={session} />}
+      {route === "trainer" && <TrainerPage />}
     </div>
   );
 }
@@ -421,12 +452,26 @@ function StudentPage({ session }: { session: AuthSession | null }) {
       {data && (
         <>
           <section className="metric-grid four">
-            <Metric label="Courses" value={data.courses.length} />
-            <Metric label="Assignments submitted" value={`${data.assignments.submitted}/${data.assignments.total}`} />
-            <Metric label="Exams completed" value={`${data.exams.completed}/${data.exams.total}`} />
-            <Metric label="Exam average" value={data.exams.averageScore === null ? "N/A" : `${data.exams.averageScore}%`} />
+            <Metric label="Courses" value={data.courses.total} />
+            <Metric label="Assignments submitted" value={`${data.progress.assignments.submitted}/${data.progress.assignments.total}`} />
+            <Metric label="Exams completed" value={`${data.progress.exams.completed}/${data.progress.exams.total}`} />
+            <Metric label="Overall progress" value={`${data.progress.overallCompletionRate}%`} />
           </section>
           <section className="content-grid">
+            <DataCard title="Assigned courses">
+              {data.courses.items.length === 0 ? (
+                <p>No courses are assigned yet. Once an admin enrolls you into a cohort and assigns courses, they will appear here.</p>
+              ) : (
+                data.courses.items.map((course) => (
+                  <Row
+                    key={course.id}
+                    title={course.title}
+                    meta={`${course.modules} module(s), ${course.assignments} assignment(s), ${course.exams} exam(s)`}
+                    badge={`${course.durationWeeks} week(s)`}
+                  />
+                ))
+              )}
+            </DataCard>
             <DataCard title="Next actions">
               {data.nextActions.length === 0 ? (
                 <p>No immediate actions. A rare quiet moment. Enjoy it responsibly.</p>
@@ -437,9 +482,13 @@ function StudentPage({ session }: { session: AuthSession | null }) {
               )}
             </DataCard>
             <DataCard title="Recent grades">
-              {data.recentGrades.map((grade) => (
-                <Row key={`${grade.type}-${grade.title}`} title={grade.title} meta={grade.type} badge={`${grade.score}/${grade.total}`} />
-              ))}
+              {data.recentGrades.length === 0 ? (
+                <p>No grades yet. Graded assignments and reviewed exams will appear here.</p>
+              ) : (
+                data.recentGrades.map((grade) => (
+                  <Row key={`${grade.type}-${grade.title}`} title={grade.title} meta={grade.type} badge={`${grade.score}/${grade.total}`} />
+                ))
+              )}
             </DataCard>
           </section>
         </>
@@ -450,12 +499,268 @@ function StudentPage({ session }: { session: AuthSession | null }) {
 
 function AdminPage({ session }: { session: AuthSession | null }) {
   const [statusFilter, setStatusFilter] = useState("pending");
-  const applicationsPath = `/admin/applications?page=1&limit=10${statusFilter ? `&status=${statusFilter}` : ""}`;
+  const [applicationsKey, setApplicationsKey] = useState(0);
+  const [workspaceKey, setWorkspaceKey] = useState(0);
+  const [selectedCohortId, setSelectedCohortId] = useState("");
+  const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [adminStatus, setAdminStatus] = useState<string | null>(null);
+  const applicationsPath = `/admin/applications?page=1&limit=20${statusFilter ? `&status=${statusFilter}` : ""}`;
   const overview = useAuthedData<AnalyticsOverview>(session, "/admin/analytics/overview");
-  const applications = useAuthedData<{ items: ApplicationListItem[]; total: number }>(session, applicationsPath);
+  const applications = useAuthedData<ListResponse<ApplicationListItem>>(session, applicationsPath, applicationsKey);
+  const cohorts = useAuthedData<ListResponse<CohortItem>>(session, "/admin/cohorts?page=1&limit=50", workspaceKey);
+  const courses = useAuthedData<ListResponse<CourseItem>>(session, "/admin/courses?page=1&limit=50", workspaceKey);
+  const modules = useAuthedData<{ items: ModuleItem[] }>(
+    session && selectedCourseId ? session : null,
+    selectedCourseId ? `/admin/courses/${selectedCourseId}/modules` : "/admin/courses/no-course/modules",
+    workspaceKey
+  );
 
   if (!session) {
     return null;
+  }
+  const accessToken = session.accessToken;
+
+  async function updateApplicationStatus(application: ApplicationListItem, status: string) {
+    setAdminStatus(`Updating application to ${status}...`);
+    try {
+      if (status === "approved" && application.status === "pending") {
+        await apiRequest(`/admin/applications/${application.id}/status`, {
+          method: "PATCH",
+          token: accessToken,
+          body: JSON.stringify({ status: "shortlisted", reason: "Auto-shortlisted before approval from admin portal" })
+        });
+      }
+      await apiRequest(`/admin/applications/${application.id}/status`, {
+        method: "PATCH",
+        token: accessToken,
+        body: JSON.stringify({ status, reason: `Marked ${status} from admin portal` })
+      });
+      setApplicationsKey((value) => value + 1);
+      setAdminStatus(`Application marked ${status}.`);
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to update application");
+    }
+  }
+
+  async function updateInterviewStatus(applicationId: string, interviewStatus: string) {
+    setAdminStatus(`Updating interview status...`);
+    try {
+      await apiRequest(`/admin/applications/${applicationId}/interview-status`, {
+        method: "PATCH",
+        token: accessToken,
+        body: JSON.stringify({ interviewStatus })
+      });
+      setApplicationsKey((value) => value + 1);
+      setAdminStatus(`Interview status changed to ${interviewStatus}.`);
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to update interview status");
+    }
+  }
+
+  async function openCv(applicationId: string) {
+    setAdminStatus("Generating secure CV link...");
+    try {
+      const response = await apiRequest<{ accessUrl: string }>(`/admin/applications/${applicationId}/cv-access`, {
+        token: accessToken
+      });
+      window.open(response.accessUrl, "_blank", "noopener,noreferrer");
+      setAdminStatus("CV link opened in a new tab.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to open CV");
+    }
+  }
+
+  async function createCohort(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Creating cohort...");
+    try {
+      await apiRequest("/admin/cohorts", {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          name: String(form.get("name")),
+          startDate: String(form.get("startDate")),
+          endDate: String(form.get("endDate")),
+          status: String(form.get("status"))
+        })
+      });
+      event.currentTarget.reset();
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Cohort created.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to create cohort");
+    }
+  }
+
+  async function createCourse(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Creating course...");
+    try {
+      await apiRequest("/admin/courses", {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          durationWeeks: Number(form.get("durationWeeks"))
+        })
+      });
+      event.currentTarget.reset();
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Course created.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to create course");
+    }
+  }
+
+  async function assignCourseToCohort() {
+    if (!selectedCohortId || !selectedCourseId) {
+      setAdminStatus("Select both a cohort and a course first.");
+      return;
+    }
+    setAdminStatus("Assigning course to cohort...");
+    try {
+      await apiRequest(`/admin/cohorts/${selectedCohortId}/courses`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({ courseId: selectedCourseId })
+      });
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Course assigned to cohort.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to assign course");
+    }
+  }
+
+  async function enrollApprovedApplication(applicationId: string) {
+    if (!selectedCohortId) {
+      setAdminStatus("Select a cohort before enrolling an approved applicant.");
+      return;
+    }
+    setAdminStatus("Enrolling approved applicant...");
+    try {
+      await apiRequest(`/admin/cohorts/${selectedCohortId}/enrollments`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({ applicationId })
+      });
+      setApplicationsKey((value) => value + 1);
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Applicant enrolled and converted to student.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to enroll applicant");
+    }
+  }
+
+  async function createModule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setAdminStatus("Select a course before creating a module.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Creating module...");
+    try {
+      await apiRequest(`/admin/courses/${selectedCourseId}/modules`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          orderIndex: Number(form.get("orderIndex"))
+        })
+      });
+      event.currentTarget.reset();
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Module created.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to create module");
+    }
+  }
+
+  async function createAssignment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedModuleId) {
+      setAdminStatus("Select a module before creating an assignment.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Creating assignment...");
+    try {
+      await apiRequest(`/admin/assignments/modules/${selectedModuleId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          dueDate: String(form.get("dueDate")),
+          totalMarks: Number(form.get("totalMarks"))
+        })
+      });
+      event.currentTarget.reset();
+      setAdminStatus("Assignment created and students notified.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to create assignment");
+    }
+  }
+
+  async function createExam(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setAdminStatus("Select a course before creating an exam.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Creating exam...");
+    try {
+      await apiRequest(`/admin/exams/courses/${selectedCourseId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          examType: String(form.get("examType")),
+          description: String(form.get("description")),
+          startTime: String(form.get("startTime")),
+          endTime: String(form.get("endTime")),
+          totalMarks: Number(form.get("totalMarks")),
+          proctoringEnabled: form.get("proctoringEnabled") === "true"
+        })
+      });
+      event.currentTarget.reset();
+      setAdminStatus("Exam created and students notified.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to create exam");
+    }
+  }
+
+  async function createLiveSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setAdminStatus("Select a course before scheduling a live session.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    setAdminStatus("Scheduling live session...");
+    try {
+      await apiRequest(`/admin/live-sessions/courses/${selectedCourseId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          meetingLink: String(form.get("meetingLink")),
+          scheduledAt: String(form.get("scheduledAt")),
+          durationMinutes: Number(form.get("durationMinutes"))
+        })
+      });
+      event.currentTarget.reset();
+      setAdminStatus("Live session scheduled and students notified.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to schedule live session");
+    }
   }
 
   return (
@@ -469,6 +774,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           <Metric label="Average exam score" value={overview.data.averageExamScore === null ? "N/A" : `${overview.data.averageExamScore ?? 0}%`} />
         </section>
       )}
+      {adminStatus && <Notice tone="warning" title="Admin action" text={adminStatus} />}
       <section className="content-grid">
         <DataCard title="Application review queue">
           <div className="filter-row">
@@ -483,13 +789,127 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           {applications.loading && <Skeleton text="Loading applications..." />}
           {applications.error && <Notice tone="warning" title="Applications unavailable" text={applications.error} />}
           {applications.data?.items.map((application) => (
-            <Row
-              key={application.id}
-              title={`${application.applicant.firstName} ${application.applicant.lastName}`}
-              meta={application.applicant.email}
-              badge={`${application.status} / ${application.interviewStatus}`}
-            />
+            <article className="admin-record" key={application.id}>
+              <Row
+                title={`${application.applicant.firstName} ${application.applicant.lastName}`}
+                meta={application.applicant.email}
+                badge={`${application.status} / ${application.interviewStatus}`}
+              />
+              <div className="action-row">
+                <button type="button" onClick={() => openCv(application.id)}>Open CV</button>
+                <button type="button" onClick={() => updateApplicationStatus(application, "shortlisted")}>Shortlist</button>
+                <button type="button" onClick={() => updateApplicationStatus(application, "approved")}>Approve</button>
+                <button type="button" onClick={() => updateApplicationStatus(application, "rejected")}>Reject</button>
+                <button type="button" onClick={() => enrollApprovedApplication(application.id)}>Enroll</button>
+                <select
+                  value={application.interviewStatus}
+                  onChange={(event) => updateInterviewStatus(application.id, event.target.value)}
+                  aria-label="Interview status"
+                >
+                  <option value="not_scheduled">Not scheduled</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </div>
+            </article>
           ))}
+        </DataCard>
+        <DataCard title="Cohorts and courses">
+          <div className="selector-stack">
+            <select value={selectedCohortId} onChange={(event) => setSelectedCohortId(event.target.value)}>
+              <option value="">Select cohort</option>
+              {cohorts.data?.items.map((cohort) => (
+                <option key={cohort.id} value={cohort.id}>{cohort.name} ({cohort.status})</option>
+              ))}
+            </select>
+            <select value={selectedCourseId} onChange={(event) => {
+              setSelectedCourseId(event.target.value);
+              setSelectedModuleId("");
+            }}>
+              <option value="">Select course</option>
+              {courses.data?.items.map((course) => (
+                <option key={course.id} value={course.id}>{course.title}</option>
+              ))}
+            </select>
+            <button className="secondary-action wide" type="button" onClick={assignCourseToCohort}>Assign selected course to selected cohort</button>
+          </div>
+          <form className="mini-form" onSubmit={createCohort}>
+            <h3>Create cohort</h3>
+            <input name="name" placeholder="Cohort name" required />
+            <div className="two-column">
+              <input name="startDate" type="date" required />
+              <input name="endDate" type="date" required />
+            </div>
+            <select name="status" defaultValue="draft">
+              <option value="draft">Draft</option>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+            </select>
+            <button className="secondary-action wide" type="submit">Create cohort</button>
+          </form>
+          <form className="mini-form" onSubmit={createCourse}>
+            <h3>Create course</h3>
+            <input name="title" placeholder="Course title" required />
+            <textarea name="description" placeholder="Course description" rows={3} required />
+            <input name="durationWeeks" type="number" min="1" placeholder="Duration weeks" required />
+            <button className="secondary-action wide" type="submit">Create course</button>
+          </form>
+        </DataCard>
+        <DataCard title="Learning setup">
+          <div className="selector-stack">
+            <select value={selectedModuleId} onChange={(event) => setSelectedModuleId(event.target.value)}>
+              <option value="">Select module</option>
+              {modules.data?.items.map((module) => (
+                <option key={module.id} value={module.id}>{module.title}</option>
+              ))}
+            </select>
+          </div>
+          <form className="mini-form" onSubmit={createModule}>
+            <h3>Create module for selected course</h3>
+            <input name="title" placeholder="Module title" required />
+            <textarea name="description" placeholder="Module description" rows={3} required />
+            <input name="orderIndex" type="number" min="1" placeholder="Order index" required />
+            <button className="secondary-action wide" type="submit">Create module</button>
+          </form>
+          <form className="mini-form" onSubmit={createAssignment}>
+            <h3>Create assignment for selected module</h3>
+            <input name="title" placeholder="Assignment title" required />
+            <textarea name="description" placeholder="Assignment description" rows={3} required />
+            <input name="dueDate" type="datetime-local" required />
+            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+            <button className="secondary-action wide" type="submit">Create assignment</button>
+          </form>
+          <form className="mini-form" onSubmit={createExam}>
+            <h3>Create exam for selected course</h3>
+            <input name="title" placeholder="Exam title" required />
+            <select name="examType" defaultValue="quiz">
+              <option value="entry">Entry</option>
+              <option value="quiz">Quiz</option>
+              <option value="mid_program">Mid-program</option>
+              <option value="final">Final</option>
+              <option value="project">Project</option>
+            </select>
+            <textarea name="description" placeholder="Exam description" rows={3} required />
+            <div className="two-column">
+              <input name="startTime" type="datetime-local" required />
+              <input name="endTime" type="datetime-local" required />
+            </div>
+            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+            <select name="proctoringEnabled" defaultValue="true">
+              <option value="true">Proctoring enabled</option>
+              <option value="false">Proctoring disabled</option>
+            </select>
+            <button className="secondary-action wide" type="submit">Create exam</button>
+          </form>
+          <form className="mini-form" onSubmit={createLiveSession}>
+            <h3>Schedule live session</h3>
+            <input name="title" placeholder="Session title" required />
+            <textarea name="description" placeholder="Session description" rows={3} required />
+            <input name="meetingLink" placeholder="https://teams.microsoft.com/..." required />
+            <input name="scheduledAt" type="datetime-local" required />
+            <input name="durationMinutes" type="number" min="1" placeholder="Duration minutes" required />
+            <button className="secondary-action wide" type="submit">Schedule session</button>
+          </form>
         </DataCard>
         <ReportsCard session={session} />
       </section>
@@ -529,15 +949,36 @@ function ExecutivePage({ session }: { session: AuthSession | null }) {
   );
 }
 
+function TrainerPage() {
+  return (
+    <main className="dashboard">
+      <DashboardHeader eyebrow="Trainer workspace" title="Facilitation tools are next in line" />
+      <section className="content-grid">
+        <DataCard title="Current access">
+          <p>
+            Trainer accounts are now routed correctly. Dedicated trainer endpoints are not built yet,
+            so this workspace is a placeholder for course facilitation, attendance support, and grading views.
+          </p>
+        </DataCard>
+        <DataCard title="Coming next">
+          <Row title="Assigned courses" meta="Trainer-specific course list" badge="Next" />
+          <Row title="Live sessions" meta="Sessions the trainer facilitates" badge="Next" />
+          <Row title="Grading queue" meta="Assignments and subjective answers to mark" badge="Next" />
+        </DataCard>
+      </section>
+    </main>
+  );
+}
+
 function ReportsCard({ session }: { session: AuthSession }) {
   const [status, setStatus] = useState<string | null>(null);
 
   async function previewApplicationsCsv() {
-    setStatus("Fetching application CSV...");
+    setStatus("Downloading application CSV...");
     try {
       const csv = await downloadText("/admin/reports/applications.csv", session.accessToken);
-      const lineCount = csv.split("\n").filter(Boolean).length;
-      setStatus(`Application CSV ready: ${lineCount} line(s). Browser download wiring comes next.`);
+      downloadCsv("bk-academy-applications.csv", csv);
+      setStatus("Application CSV downloaded.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Unable to fetch report");
     }
@@ -548,14 +989,24 @@ function ReportsCard({ session }: { session: AuthSession }) {
       <Row title="Applications report" meta="Applicant identity, status, interview status, CV reference" badge="JSON/CSV" />
       <Row title="Cohort performance" meta="Assignments, exams, integrity, attendance" badge="JSON/CSV" />
       <button className="secondary-action wide" type="button" onClick={previewApplicationsCsv}>
-        Test applications CSV
+        Download applications CSV
       </button>
       {status && <p className="form-status">{status}</p>}
     </DataCard>
   );
 }
 
-function useAuthedData<T>(session: AuthSession | null, path: string) {
+function downloadCsv(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function useAuthedData<T>(session: AuthSession | null, path: string, refreshKey = 0) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -583,7 +1034,7 @@ function useAuthedData<T>(session: AuthSession | null, path: string) {
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [path, session]);
+  }, [path, refreshKey, session]);
 
   return { data, error, loading };
 }
@@ -689,6 +1140,9 @@ function defaultRouteForRole(role: UserRole): Route {
   }
   if (role === "student") {
     return "student";
+  }
+  if (role === "trainer") {
+    return "trainer";
   }
   return "apply";
 }

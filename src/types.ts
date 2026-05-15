@@ -45,19 +45,41 @@ export interface StudentDashboard {
     lastName: string;
     email: string;
   };
-  cohorts: Array<{ id: string; name: string; status: string }>;
-  courses: Array<{ id: string; title: string; progress?: number }>;
-  assignments: {
+  cohorts: {
     total: number;
-    submitted: number;
-    graded: number;
-    pending: number;
+    items: Array<{ id: string; name: string; status: string; startDate: string; endDate: string }>;
   };
-  exams: {
+  courses: {
     total: number;
-    attempted: number;
-    completed: number;
-    averageScore: number | null;
+    items: Array<{
+      id: string;
+      title: string;
+      description: string;
+      durationWeeks: number;
+      modules: number;
+      assignments: number;
+      exams: number;
+    }>;
+  };
+  progress: {
+    assignments: {
+      total: number;
+      submitted: number;
+      graded: number;
+      pending: number;
+      completionRate: number;
+      averageScore: number | null;
+    };
+    exams: {
+      total: number;
+      attempted: number;
+      completed: number;
+      reviewed: number;
+      pending: number;
+      completionRate: number;
+      averageScore: number | null;
+    };
+    overallCompletionRate: number;
   };
   nextActions: Array<{ type: string; title: string; dueAt?: string }>;
   recentGrades: Array<{ title: string; score: number; total: number; type: string }>;

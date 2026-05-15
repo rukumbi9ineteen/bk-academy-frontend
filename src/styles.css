@@ -454,6 +454,49 @@ select:focus {
   gap: 0.75rem;
 }
 
+.admin-record,
+.selector-stack,
+.mini-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.admin-record {
+  padding: 0.35rem;
+  border-radius: 1.25rem;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.action-row button,
+.action-row select {
+  width: auto;
+  min-height: 2.65rem;
+  border: 1px solid rgba(3, 78, 162, 0.14);
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  background: #fff;
+  color: var(--bk-blue);
+  font-weight: 900;
+}
+
+.mini-form {
+  margin-top: 0.75rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(1, 27, 57, 0.08);
+}
+
+.mini-form h3 {
+  margin: 0;
+  color: var(--bk-ink);
+  letter-spacing: -0.03em;
+}
+
 .row-item {
   display: flex;
   align-items: center;
