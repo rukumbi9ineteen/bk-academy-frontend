@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { apiRequest, downloadText, getApiUrl, login, registerApplicant } from "./api";
+import { apiRequest, downloadText, login, registerApplicant } from "./api";
 import { clearSession, loadSession, saveSession } from "./auth";
 import type {
   AnalyticsOverview,
@@ -65,6 +65,8 @@ type ModuleItem = {
   description: string;
   orderIndex: number;
 };
+
+type AdminSection = "overview" | "applications" | "cohorts" | "learning" | "reports";
 
 export function App() {
   const [route, setRoute] = useState<Route>(getRouteFromHash());
@@ -498,6 +500,7 @@ function StudentPage({ session }: { session: AuthSession | null }) {
 }
 
 function AdminPage({ session }: { session: AuthSession | null }) {
+  const [adminSection, setAdminSection] = useState<AdminSection>("overview");
   const [statusFilter, setStatusFilter] = useState("pending");
   const [applicationsKey, setApplicationsKey] = useState(0);
   const [workspaceKey, setWorkspaceKey] = useState(0);
@@ -573,7 +576,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
 
   async function createCohort(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Creating cohort...");
     try {
       await apiRequest("/admin/cohorts", {
@@ -586,7 +590,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           status: String(form.get("status"))
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setWorkspaceKey((value) => value + 1);
       setAdminStatus("Cohort created.");
     } catch (error) {
@@ -596,7 +600,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
 
   async function createCourse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Creating course...");
     try {
       await apiRequest("/admin/courses", {
@@ -608,7 +613,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           durationWeeks: Number(form.get("durationWeeks"))
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setWorkspaceKey((value) => value + 1);
       setAdminStatus("Course created.");
     } catch (error) {
@@ -661,7 +666,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
       setAdminStatus("Select a course before creating a module.");
       return;
     }
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Creating module...");
     try {
       await apiRequest(`/admin/courses/${selectedCourseId}/modules`, {
@@ -673,7 +679,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           orderIndex: Number(form.get("orderIndex"))
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setWorkspaceKey((value) => value + 1);
       setAdminStatus("Module created.");
     } catch (error) {
@@ -687,7 +693,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
       setAdminStatus("Select a module before creating an assignment.");
       return;
     }
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Creating assignment...");
     try {
       await apiRequest(`/admin/assignments/modules/${selectedModuleId}`, {
@@ -700,7 +707,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           totalMarks: Number(form.get("totalMarks"))
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setAdminStatus("Assignment created and students notified.");
     } catch (error) {
       setAdminStatus(error instanceof Error ? error.message : "Unable to create assignment");
@@ -713,7 +720,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
       setAdminStatus("Select a course before creating an exam.");
       return;
     }
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Creating exam...");
     try {
       await apiRequest(`/admin/exams/courses/${selectedCourseId}`, {
@@ -729,7 +737,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           proctoringEnabled: form.get("proctoringEnabled") === "true"
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setAdminStatus("Exam created and students notified.");
     } catch (error) {
       setAdminStatus(error instanceof Error ? error.message : "Unable to create exam");
@@ -742,7 +750,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
       setAdminStatus("Select a course before scheduling a live session.");
       return;
     }
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setAdminStatus("Scheduling live session...");
     try {
       await apiRequest(`/admin/live-sessions/courses/${selectedCourseId}`, {
@@ -756,7 +765,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           durationMinutes: Number(form.get("durationMinutes"))
         })
       });
-      event.currentTarget.reset();
+      formElement.reset();
       setAdminStatus("Live session scheduled and students notified.");
     } catch (error) {
       setAdminStatus(error instanceof Error ? error.message : "Unable to schedule live session");
@@ -764,8 +773,8 @@ function AdminPage({ session }: { session: AuthSession | null }) {
   }
 
   return (
-    <main className="dashboard">
-      <DashboardHeader eyebrow="Admin operations" title="Review, track, and move cohorts forward" />
+    <main className="dashboard admin-dashboard">
+      <DashboardHeader eyebrow="Admin operations" title="Academy command center" />
       {overview.data && (
         <section className="metric-grid four">
           <Metric label="Students" value={overview.data.studentTotal ?? 0} />
@@ -774,145 +783,233 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           <Metric label="Average exam score" value={overview.data.averageExamScore === null ? "N/A" : `${overview.data.averageExamScore ?? 0}%`} />
         </section>
       )}
-      {adminStatus && <Notice tone="warning" title="Admin action" text={adminStatus} />}
-      <section className="content-grid">
-        <DataCard title="Application review queue">
-          <div className="filter-row">
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="">All statuses</option>
-              <option value="pending">Pending</option>
-              <option value="shortlisted">Shortlisted</option>
-              <option value="approved">Approved</option>
-              <option value="rejected">Rejected</option>
-            </select>
-          </div>
-          {applications.loading && <Skeleton text="Loading applications..." />}
-          {applications.error && <Notice tone="warning" title="Applications unavailable" text={applications.error} />}
-          {applications.data?.items.map((application) => (
-            <article className="admin-record" key={application.id}>
-              <Row
-                title={`${application.applicant.firstName} ${application.applicant.lastName}`}
-                meta={application.applicant.email}
-                badge={`${application.status} / ${application.interviewStatus}`}
-              />
-              <div className="action-row">
-                <button type="button" onClick={() => openCv(application.id)}>Open CV</button>
-                <button type="button" onClick={() => updateApplicationStatus(application, "shortlisted")}>Shortlist</button>
-                <button type="button" onClick={() => updateApplicationStatus(application, "approved")}>Approve</button>
-                <button type="button" onClick={() => updateApplicationStatus(application, "rejected")}>Reject</button>
-                <button type="button" onClick={() => enrollApprovedApplication(application.id)}>Enroll</button>
-                <select
-                  value={application.interviewStatus}
-                  onChange={(event) => updateInterviewStatus(application.id, event.target.value)}
-                  aria-label="Interview status"
-                >
-                  <option value="not_scheduled">Not scheduled</option>
-                  <option value="scheduled">Scheduled</option>
-                  <option value="completed">Completed</option>
-                </select>
-              </div>
-            </article>
-          ))}
-        </DataCard>
-        <DataCard title="Cohorts and courses">
-          <div className="selector-stack">
-            <select value={selectedCohortId} onChange={(event) => setSelectedCohortId(event.target.value)}>
-              <option value="">Select cohort</option>
-              {cohorts.data?.items.map((cohort) => (
-                <option key={cohort.id} value={cohort.id}>{cohort.name} ({cohort.status})</option>
-              ))}
-            </select>
-            <select value={selectedCourseId} onChange={(event) => {
-              setSelectedCourseId(event.target.value);
-              setSelectedModuleId("");
-            }}>
-              <option value="">Select course</option>
-              {courses.data?.items.map((course) => (
-                <option key={course.id} value={course.id}>{course.title}</option>
-              ))}
-            </select>
-            <button className="secondary-action wide" type="button" onClick={assignCourseToCohort}>Assign selected course to selected cohort</button>
-          </div>
-          <form className="mini-form" onSubmit={createCohort}>
-            <h3>Create cohort</h3>
-            <input name="name" placeholder="Cohort name" required />
-            <div className="two-column">
-              <input name="startDate" type="date" required />
-              <input name="endDate" type="date" required />
-            </div>
-            <select name="status" defaultValue="draft">
-              <option value="draft">Draft</option>
-              <option value="active">Active</option>
-              <option value="completed">Completed</option>
-            </select>
-            <button className="secondary-action wide" type="submit">Create cohort</button>
-          </form>
-          <form className="mini-form" onSubmit={createCourse}>
-            <h3>Create course</h3>
-            <input name="title" placeholder="Course title" required />
-            <textarea name="description" placeholder="Course description" rows={3} required />
-            <input name="durationWeeks" type="number" min="1" placeholder="Duration weeks" required />
-            <button className="secondary-action wide" type="submit">Create course</button>
-          </form>
-        </DataCard>
-        <DataCard title="Learning setup">
-          <div className="selector-stack">
-            <select value={selectedModuleId} onChange={(event) => setSelectedModuleId(event.target.value)}>
-              <option value="">Select module</option>
-              {modules.data?.items.map((module) => (
-                <option key={module.id} value={module.id}>{module.title}</option>
-              ))}
-            </select>
-          </div>
-          <form className="mini-form" onSubmit={createModule}>
-            <h3>Create module for selected course</h3>
-            <input name="title" placeholder="Module title" required />
-            <textarea name="description" placeholder="Module description" rows={3} required />
-            <input name="orderIndex" type="number" min="1" placeholder="Order index" required />
-            <button className="secondary-action wide" type="submit">Create module</button>
-          </form>
-          <form className="mini-form" onSubmit={createAssignment}>
-            <h3>Create assignment for selected module</h3>
-            <input name="title" placeholder="Assignment title" required />
-            <textarea name="description" placeholder="Assignment description" rows={3} required />
-            <input name="dueDate" type="datetime-local" required />
-            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
-            <button className="secondary-action wide" type="submit">Create assignment</button>
-          </form>
-          <form className="mini-form" onSubmit={createExam}>
-            <h3>Create exam for selected course</h3>
-            <input name="title" placeholder="Exam title" required />
-            <select name="examType" defaultValue="quiz">
-              <option value="entry">Entry</option>
-              <option value="quiz">Quiz</option>
-              <option value="mid_program">Mid-program</option>
-              <option value="final">Final</option>
-              <option value="project">Project</option>
-            </select>
-            <textarea name="description" placeholder="Exam description" rows={3} required />
-            <div className="two-column">
-              <input name="startTime" type="datetime-local" required />
-              <input name="endTime" type="datetime-local" required />
-            </div>
-            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
-            <select name="proctoringEnabled" defaultValue="true">
-              <option value="true">Proctoring enabled</option>
-              <option value="false">Proctoring disabled</option>
-            </select>
-            <button className="secondary-action wide" type="submit">Create exam</button>
-          </form>
-          <form className="mini-form" onSubmit={createLiveSession}>
-            <h3>Schedule live session</h3>
-            <input name="title" placeholder="Session title" required />
-            <textarea name="description" placeholder="Session description" rows={3} required />
-            <input name="meetingLink" placeholder="https://teams.microsoft.com/..." required />
-            <input name="scheduledAt" type="datetime-local" required />
-            <input name="durationMinutes" type="number" min="1" placeholder="Duration minutes" required />
-            <button className="secondary-action wide" type="submit">Schedule session</button>
-          </form>
-        </DataCard>
-        <ReportsCard session={session} />
+      <section className="admin-tabs" aria-label="Admin workspaces">
+        {[
+          ["overview", "Overview"],
+          ["applications", "Applications"],
+          ["cohorts", "Cohorts"],
+          ["learning", "Learning"],
+          ["reports", "Reports"]
+        ].map(([id, label]) => (
+          <button
+            className={adminSection === id ? "active" : ""}
+            key={id}
+            type="button"
+            onClick={() => setAdminSection(id as AdminSection)}
+          >
+            {label}
+          </button>
+        ))}
       </section>
+
+      {adminStatus && <Notice tone="warning" title="Admin action" text={adminStatus} />}
+
+      {adminSection === "overview" && (
+        <section className="admin-page-grid">
+          <DataCard title="Workflow map">
+            <Row title="1. Review applicants" meta="Open CVs, shortlist, approve, reject, and track interviews." badge="Applications" />
+            <Row title="2. Prepare academy structure" meta="Create cohorts and courses, then assign courses to cohorts." badge="Cohorts" />
+            <Row title="3. Enroll approved applicants" meta="Select a cohort, then enroll an approved applicant to convert them into a student." badge="Dependency" />
+            <Row title="4. Add learning activities" meta="Create modules first, then assignments, exams, and live sessions." badge="Learning" />
+          </DataCard>
+          <DataCard title="Current setup">
+            <Row title="Applications" meta="Total applications currently visible to admin." badge={applications.data?.total ?? 0} />
+            <Row title="Cohorts" meta="Cohorts available for enrollment and course assignment." badge={cohorts.data?.total ?? 0} />
+            <Row title="Courses" meta="Courses available to assign and build learning content." badge={courses.data?.total ?? 0} />
+          </DataCard>
+        </section>
+      )}
+
+      {adminSection === "applications" && (
+        <section className="admin-page-grid">
+          <DataCard title="Application review queue">
+            <div className="section-intro">
+              <p>Approve or reject applicants here. To enroll an approved applicant, select a target cohort below first.</p>
+            </div>
+            <div className="selector-stack">
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="shortlisted">Shortlisted</option>
+                <option value="approved">Approved</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <select value={selectedCohortId} onChange={(event) => setSelectedCohortId(event.target.value)}>
+                <option value="">Target cohort for enrollment</option>
+                {cohorts.data?.items.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>{cohort.name} ({cohort.status})</option>
+                ))}
+              </select>
+            </div>
+            {applications.loading && <Skeleton text="Loading applications..." />}
+            {applications.error && <Notice tone="warning" title="Applications unavailable" text={applications.error} />}
+            {applications.data?.items.length === 0 && <p>No applications match this filter.</p>}
+            {applications.data?.items.map((application) => (
+              <article className="admin-record" key={application.id}>
+                <Row
+                  title={`${application.applicant.firstName} ${application.applicant.lastName}`}
+                  meta={application.applicant.email}
+                  badge={`${application.status} / ${application.interviewStatus}`}
+                />
+                <div className="action-row">
+                  <button type="button" onClick={() => openCv(application.id)}>Open CV</button>
+                  <button type="button" onClick={() => updateApplicationStatus(application, "shortlisted")}>Shortlist</button>
+                  <button type="button" onClick={() => updateApplicationStatus(application, "approved")}>Approve</button>
+                  <button type="button" onClick={() => updateApplicationStatus(application, "rejected")}>Reject</button>
+                  <button disabled={!selectedCohortId || application.status !== "approved"} type="button" onClick={() => enrollApprovedApplication(application.id)}>Enroll</button>
+                  <select
+                    value={application.interviewStatus}
+                    onChange={(event) => updateInterviewStatus(application.id, event.target.value)}
+                    aria-label="Interview status"
+                  >
+                    <option value="not_scheduled">Not scheduled</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+              </article>
+            ))}
+          </DataCard>
+        </section>
+      )}
+
+      {adminSection === "cohorts" && (
+        <section className="admin-page-grid">
+          <DataCard title="Create and connect cohorts">
+            <div className="section-intro">
+              <p>Courses become visible to students only after they are assigned to a cohort that the student is enrolled in.</p>
+            </div>
+            <div className="selector-stack">
+              <select value={selectedCohortId} onChange={(event) => setSelectedCohortId(event.target.value)}>
+                <option value="">Select cohort</option>
+                {cohorts.data?.items.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>{cohort.name} ({cohort.status})</option>
+                ))}
+              </select>
+              <select value={selectedCourseId} onChange={(event) => {
+                setSelectedCourseId(event.target.value);
+                setSelectedModuleId("");
+              }}>
+                <option value="">Select course</option>
+                {courses.data?.items.map((course) => (
+                  <option key={course.id} value={course.id}>{course.title}</option>
+                ))}
+              </select>
+              <button disabled={!selectedCohortId || !selectedCourseId} className="secondary-action wide" type="button" onClick={assignCourseToCohort}>Assign selected course to selected cohort</button>
+            </div>
+          </DataCard>
+          <DataCard title="New cohort">
+            <form className="mini-form no-divider" onSubmit={createCohort}>
+              <input name="name" placeholder="Cohort name" required />
+              <div className="two-column">
+                <input name="startDate" type="date" required />
+                <input name="endDate" type="date" required />
+              </div>
+              <select name="status" defaultValue="draft">
+                <option value="draft">Draft</option>
+                <option value="active">Active</option>
+                <option value="completed">Completed</option>
+              </select>
+              <button className="primary-action wide" type="submit">Create cohort</button>
+            </form>
+          </DataCard>
+          <DataCard title="New course">
+            <form className="mini-form no-divider" onSubmit={createCourse}>
+              <input name="title" placeholder="Course title" required />
+              <textarea name="description" placeholder="Course description, at least 10 characters" rows={4} required />
+              <input name="durationWeeks" type="number" min="1" placeholder="Duration weeks" required />
+              <button className="primary-action wide" type="submit">Create course</button>
+            </form>
+          </DataCard>
+        </section>
+      )}
+
+      {adminSection === "learning" && (
+        <section className="admin-page-grid">
+          <DataCard title="Select learning context">
+            <div className="section-intro">
+              <p>Create modules under a course first. Assignments require a module; exams and live sessions require a course.</p>
+            </div>
+            <div className="selector-stack">
+              <select value={selectedCourseId} onChange={(event) => {
+                setSelectedCourseId(event.target.value);
+                setSelectedModuleId("");
+              }}>
+                <option value="">Select course</option>
+                {courses.data?.items.map((course) => (
+                  <option key={course.id} value={course.id}>{course.title}</option>
+                ))}
+              </select>
+              <select value={selectedModuleId} onChange={(event) => setSelectedModuleId(event.target.value)}>
+                <option value="">Select module</option>
+                {modules.data?.items.map((module) => (
+                  <option key={module.id} value={module.id}>{module.title}</option>
+                ))}
+              </select>
+            </div>
+          </DataCard>
+          <DataCard title="Module">
+            <form className="mini-form no-divider" onSubmit={createModule}>
+              <input name="title" placeholder="Module title" required />
+              <textarea name="description" placeholder="Module description, at least 10 characters" rows={4} required />
+              <input name="orderIndex" type="number" min="1" placeholder="Order index" required />
+              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create module</button>
+            </form>
+          </DataCard>
+          <DataCard title="Assignment">
+            <form className="mini-form no-divider" onSubmit={createAssignment}>
+              <input name="title" placeholder="Assignment title" required />
+              <textarea name="description" placeholder="Assignment description, at least 10 characters" rows={4} required />
+              <input name="dueDate" type="datetime-local" required />
+              <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+              <button disabled={!selectedModuleId} className="primary-action wide" type="submit">Create assignment</button>
+            </form>
+          </DataCard>
+          <DataCard title="Exam">
+            <form className="mini-form no-divider" onSubmit={createExam}>
+              <input name="title" placeholder="Exam title" required />
+              <select name="examType" defaultValue="quiz">
+                <option value="entry">Entry</option>
+                <option value="quiz">Quiz</option>
+                <option value="mid_program">Mid-program</option>
+                <option value="final">Final</option>
+                <option value="project">Project</option>
+              </select>
+              <textarea name="description" placeholder="Exam description, at least 10 characters" rows={4} required />
+              <div className="two-column">
+                <input name="startTime" type="datetime-local" required />
+                <input name="endTime" type="datetime-local" required />
+              </div>
+              <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+              <select name="proctoringEnabled" defaultValue="true">
+                <option value="true">Proctoring enabled</option>
+                <option value="false">Proctoring disabled</option>
+              </select>
+              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create exam</button>
+            </form>
+          </DataCard>
+          <DataCard title="Live session">
+            <form className="mini-form no-divider" onSubmit={createLiveSession}>
+              <input name="title" placeholder="Session title" required />
+              <textarea name="description" placeholder="Session description, at least 10 characters" rows={4} required />
+              <input name="meetingLink" placeholder="https://teams.microsoft.com/..." required />
+              <input name="scheduledAt" type="datetime-local" required />
+              <input name="durationMinutes" type="number" min="1" placeholder="Duration minutes" required />
+              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Schedule session</button>
+            </form>
+          </DataCard>
+        </section>
+      )}
+
+      {adminSection === "reports" && (
+        <section className="admin-page-grid">
+          <ReportsCard session={session} />
+          <DataCard title="Report dependencies">
+            <Row title="Applications CSV" meta="Available as soon as applicants submit forms." badge="Ready" />
+            <Row title="Cohort performance CSV" meta="Needs enrolled students, assigned courses, assignments, exams, and attendance." badge="Data-driven" />
+          </DataCard>
+        </section>
+      )}
     </main>
   );
 }
@@ -1069,7 +1166,6 @@ function DashboardHeader({ eyebrow, title }: { eyebrow: string; title: string })
         <p className="eyebrow">{eyebrow}</p>
         <h1>{title}</h1>
       </div>
-      <span className="api-chip">API {getApiUrl()}</span>
     </section>
   );
 }
@@ -1101,7 +1197,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-function Row({ title, meta, badge }: { title: string; meta: string; badge?: string }) {
+function Row({ title, meta, badge }: { title: string; meta: string; badge?: string | number }) {
   return (
     <article className="row-item">
       <span>
