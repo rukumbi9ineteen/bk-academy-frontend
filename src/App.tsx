@@ -11,17 +11,36 @@ import type {
 
 type Route = "home" | "apply" | "login" | "student" | "admin" | "executive";
 
-const routes: Array<{ id: Route; label: string }> = [
+type NavItem = {
+  id: Route;
+  label: string;
+  roles?: UserRole[];
+  publicOnly?: boolean;
+};
+
+const routes: NavItem[] = [
   { id: "home", label: "Academy" },
-  { id: "apply", label: "Apply" },
-  { id: "student", label: "Student" },
-  { id: "admin", label: "Admin" },
-  { id: "executive", label: "Executive" }
+  { id: "apply", label: "Apply", publicOnly: true },
+  { id: "apply", label: "My Application", roles: ["applicant"] },
+  { id: "student", label: "Dashboard", roles: ["student"] },
+  { id: "admin", label: "Admin", roles: ["admin"] },
+  { id: "executive", label: "Executive", roles: ["executive"] }
 ];
+
+const routeAccess: Record<Route, UserRole[] | "public"> = {
+  home: "public",
+  apply: "public",
+  login: "public",
+  student: ["student"],
+  admin: ["admin"],
+  executive: ["executive"]
+};
 
 export function App() {
   const [route, setRoute] = useState<Route>(getRouteFromHash());
   const [session, setSession] = useState<AuthSession | null>(() => loadSession());
+  const visibleRoutes = getVisibleRoutes(session?.user.role);
+  const access = canAccessRoute(route, session?.user.role);
 
   useEffect(() => {
     const onHashChange = () => setRoute(getRouteFromHash());
@@ -46,47 +65,90 @@ export function App() {
     navigate("home");
   }
 
+  if (!access.allowed) {
+    return (
+      <div className="app-shell">
+        <AppHeader
+          route={route}
+          session={session}
+          routes={visibleRoutes}
+          onNavigate={navigate}
+          onLogout={handleLogout}
+        />
+        <Gate
+          title={access.reason === "signin" ? "Sign in required" : "Workspace unavailable"}
+          message={access.message}
+          onNavigate={navigate}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <button className="brand-mark" type="button" onClick={() => navigate("home")}>
-          <span className="brand-symbol">BK</span>
-          <span>
-            <strong>BK Academy</strong>
-            <small>Re-imagined</small>
-          </span>
-        </button>
-        <nav aria-label="Primary navigation">
-          {routes.map((item) => (
-            <button
-              className={route === item.id ? "active" : ""}
-              key={item.id}
-              type="button"
-              onClick={() => navigate(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-        <div className="session-pill">
-          {session ? (
-            <>
-              <span>{session.user.role}</span>
-              <button type="button" onClick={handleLogout}>Sign out</button>
-            </>
-          ) : (
-            <button type="button" onClick={() => navigate("login")}>Sign in</button>
-          )}
-        </div>
-      </header>
+      <AppHeader
+        route={route}
+        session={session}
+        routes={visibleRoutes}
+        onNavigate={navigate}
+        onLogout={handleLogout}
+      />
 
       {route === "home" && <LandingPage onNavigate={navigate} />}
       {route === "apply" && <ApplyPage session={session} onLogin={handleLogin} />}
       {route === "login" && <LoginPage onLogin={handleLogin} />}
-      {route === "student" && <StudentPage session={session} onNavigate={navigate} />}
-      {route === "admin" && <AdminPage session={session} onNavigate={navigate} />}
-      {route === "executive" && <ExecutivePage session={session} onNavigate={navigate} />}
+      {route === "student" && <StudentPage session={session} />}
+      {route === "admin" && <AdminPage session={session} />}
+      {route === "executive" && <ExecutivePage session={session} />}
     </div>
+  );
+}
+
+function AppHeader({
+  route,
+  session,
+  routes,
+  onNavigate,
+  onLogout
+}: {
+  route: Route;
+  session: AuthSession | null;
+  routes: NavItem[];
+  onNavigate: (route: Route) => void;
+  onLogout: () => void;
+}) {
+  return (
+    <header className="topbar">
+      <button className="brand-mark" type="button" onClick={() => onNavigate("home")}>
+        <span className="brand-symbol">BK</span>
+        <span>
+          <strong>BK Academy</strong>
+          <small>Re-imagined</small>
+        </span>
+      </button>
+      <nav aria-label="Primary navigation">
+        {routes.map((item) => (
+          <button
+            className={route === item.id ? "active" : ""}
+            key={`${item.id}-${item.label}`}
+            type="button"
+            onClick={() => onNavigate(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="session-pill">
+        {session ? (
+          <>
+            <span>{session.user.role}</span>
+            <button type="button" onClick={onLogout}>Sign out</button>
+          </>
+        ) : (
+          <button type="button" onClick={() => onNavigate("login")}>Sign in</button>
+        )}
+      </div>
+    </header>
   );
 }
 
@@ -348,18 +410,8 @@ function ApplyPage({
   );
 }
 
-function StudentPage({
-  session,
-  onNavigate
-}: {
-  session: AuthSession | null;
-  onNavigate: (route: Route) => void;
-}) {
+function StudentPage({ session }: { session: AuthSession | null }) {
   const { data, error, loading } = useAuthedData<StudentDashboard>(session, "/student/dashboard");
-
-  if (!session) {
-    return <Gate title="Student dashboard" onNavigate={onNavigate} />;
-  }
 
   return (
     <main className="dashboard">
@@ -396,20 +448,14 @@ function StudentPage({
   );
 }
 
-function AdminPage({
-  session,
-  onNavigate
-}: {
-  session: AuthSession | null;
-  onNavigate: (route: Route) => void;
-}) {
+function AdminPage({ session }: { session: AuthSession | null }) {
   const [statusFilter, setStatusFilter] = useState("pending");
   const applicationsPath = `/admin/applications?page=1&limit=10${statusFilter ? `&status=${statusFilter}` : ""}`;
   const overview = useAuthedData<AnalyticsOverview>(session, "/admin/analytics/overview");
   const applications = useAuthedData<{ items: ApplicationListItem[]; total: number }>(session, applicationsPath);
 
   if (!session) {
-    return <Gate title="Admin dashboard" onNavigate={onNavigate} />;
+    return null;
   }
 
   return (
@@ -451,17 +497,11 @@ function AdminPage({
   );
 }
 
-function ExecutivePage({
-  session,
-  onNavigate
-}: {
-  session: AuthSession | null;
-  onNavigate: (route: Route) => void;
-}) {
+function ExecutivePage({ session }: { session: AuthSession | null }) {
   const overview = useAuthedData<AnalyticsOverview>(session, "/admin/analytics/overview");
 
   if (!session) {
-    return <Gate title="Executive dashboard" onNavigate={onNavigate} />;
+    return null;
   }
 
   return (
@@ -548,13 +588,21 @@ function useAuthedData<T>(session: AuthSession | null, path: string) {
   return { data, error, loading };
 }
 
-function Gate({ title, onNavigate }: { title: string; onNavigate: (route: Route) => void }) {
+function Gate({
+  title,
+  message = "Sign in with a role that can access this workspace.",
+  onNavigate
+}: {
+  title: string;
+  message?: string;
+  onNavigate: (route: Route) => void;
+}) {
   return (
     <main className="center-stage">
       <section className="auth-card">
         <p className="eyebrow">Authentication required</p>
         <h1>{title}</h1>
-        <p>Sign in with a role that can access this workspace.</p>
+        <p>{message}</p>
         <button className="primary-action" type="button" onClick={() => onNavigate("login")}>
           Sign in
         </button>
@@ -643,6 +691,51 @@ function defaultRouteForRole(role: UserRole): Route {
     return "student";
   }
   return "apply";
+}
+
+function getVisibleRoutes(role?: UserRole): NavItem[] {
+  return routes.filter((item) => {
+    if (item.publicOnly) {
+      return !role;
+    }
+    if (!item.roles) {
+      return true;
+    }
+    return role ? item.roles.includes(role) : false;
+  });
+}
+
+function canAccessRoute(
+  route: Route,
+  role?: UserRole
+): { allowed: true } | { allowed: false; reason: "signin" | "role"; message: string } {
+  if (route === "apply" && role && role !== "applicant") {
+    return {
+      allowed: false,
+      reason: "role",
+      message: `Your ${role} account does not use the public application workspace.`
+    };
+  }
+
+  const allowedRoles = routeAccess[route];
+  if (allowedRoles === "public") {
+    return { allowed: true };
+  }
+  if (!role) {
+    return {
+      allowed: false,
+      reason: "signin",
+      message: "Please sign in before opening this workspace."
+    };
+  }
+  if (!allowedRoles.includes(role)) {
+    return {
+      allowed: false,
+      reason: "role",
+      message: `Your ${role} account does not have access to this workspace.`
+    };
+  }
+  return { allowed: true };
 }
 
 function formatDate(value?: string): string | undefined {
