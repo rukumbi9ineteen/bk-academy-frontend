@@ -530,6 +530,26 @@ select:focus {
   font-weight: 900;
 }
 
+.deck-viewer {
+  overflow: hidden;
+  min-height: 30rem;
+  border: 1px solid rgba(1, 27, 57, 0.1);
+  border-radius: 1.25rem;
+  background: rgba(1, 27, 57, 0.05);
+}
+
+.deck-viewer iframe {
+  display: block;
+  width: 100%;
+  min-height: 30rem;
+  border: 0;
+}
+
+.module-marker-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
 .mini-form {
   margin-top: 0.75rem;
   padding-top: 0.9rem;

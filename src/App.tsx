@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { apiRequest, downloadText, login, registerApplicant } from "./api";
+import { apiRequest, downloadBlob, downloadText, login, registerApplicant } from "./api";
 import { clearSession, loadSession, saveSession } from "./auth";
 import type {
   AnalyticsOverview,
@@ -56,6 +56,13 @@ type CourseItem = {
   title: string;
   description: string;
   durationWeeks: number;
+  trainerId?: string | null;
+  trainer?: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    email: string;
+  } | null;
 };
 
 type ModuleItem = {
@@ -66,7 +73,76 @@ type ModuleItem = {
   orderIndex: number;
 };
 
-type AdminSection = "overview" | "applications" | "cohorts" | "learning" | "reports";
+type InternalUserItem = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: UserRole;
+};
+
+type AssignmentItem = {
+  id: string;
+  moduleId: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  totalMarks: number;
+  module?: { id: string; courseId: string; title: string } | null;
+  submission?: { id: string; marks: number | null; feedback: string | null; submittedAt: string } | null;
+};
+
+type ExamItem = {
+  id: string;
+  courseId: string;
+  title: string;
+  examType: string;
+  description: string;
+  startTime: string;
+  endTime: string;
+  totalMarks: number;
+  proctoringEnabled: boolean;
+  course?: { id: string; title: string } | null;
+  attempt?: { id: string; status: string; score: number | null; integrityStatus: string } | null;
+};
+
+type ExamQuestionItem = {
+  id: string;
+  examId: string;
+  questionType: string;
+  prompt: string;
+  options?: string[] | null;
+  points: number;
+  orderIndex: number;
+  correctAnswer?: string | null;
+};
+
+type LiveSessionItem = {
+  id: string;
+  courseId: string;
+  title: string;
+  description: string;
+  meetingLink: string;
+  scheduledAt: string;
+  durationMinutes: number;
+};
+
+type CourseDeck = {
+  id: string;
+  courseId: string;
+  title: string;
+  originalFilename: string;
+  mimeType: string;
+  moduleMarkers: Array<{
+    moduleId: string;
+    name: string;
+    startSlide: number;
+    endSlide: number | null;
+  }>;
+  viewPath: string;
+};
+
+type AdminSection = "overview" | "applications" | "cohorts" | "courses" | "reports";
 
 export function App() {
   const [route, setRoute] = useState<Route>(getRouteFromHash());
@@ -132,7 +208,7 @@ export function App() {
       {route === "student" && <StudentPage session={session} />}
       {route === "admin" && <AdminPage session={session} />}
       {route === "executive" && <ExecutivePage session={session} />}
-      {route === "trainer" && <TrainerPage />}
+      {route === "trainer" && <TrainerPage session={session} />}
     </div>
   );
 }
@@ -444,11 +520,136 @@ function ApplyPage({
 }
 
 function StudentPage({ session }: { session: AuthSession | null }) {
+  const [studentKey, setStudentKey] = useState(0);
+  const [studentStatus, setStudentStatus] = useState<string | null>(null);
+  const [activeExam, setActiveExam] = useState<{
+    examId: string;
+    attemptId: string;
+    questions: ExamQuestionItem[];
+    answers: Record<string, string>;
+  } | null>(null);
+  const [activeDeck, setActiveDeck] = useState<{
+    metadata: CourseDeck;
+    objectUrl: string;
+  } | null>(null);
   const { data, error, loading } = useAuthedData<StudentDashboard>(session, "/student/dashboard");
+  const assignments = useAuthedData<ListResponse<AssignmentItem>>(session, "/student/assignments", studentKey);
+  const exams = useAuthedData<ListResponse<ExamItem>>(session, "/student/exams", studentKey);
+
+  useEffect(() => {
+    return () => {
+      if (activeDeck?.objectUrl) {
+        URL.revokeObjectURL(activeDeck.objectUrl);
+      }
+    };
+  }, [activeDeck?.objectUrl]);
+
+  if (!session) {
+    return null;
+  }
+  const accessToken = session.accessToken;
+
+  async function submitAssignment(event: FormEvent<HTMLFormElement>, assignmentId: string) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setStudentStatus("Uploading assignment submission...");
+    try {
+      await apiRequest(`/student/assignments/${assignmentId}/submissions`, {
+        method: "POST",
+        token: accessToken,
+        body: form
+      });
+      formElement.reset();
+      setStudentKey((value) => value + 1);
+      setStudentStatus("Assignment submitted. Your trainer can now grade it.");
+    } catch (error) {
+      setStudentStatus(error instanceof Error ? error.message : "Unable to submit assignment");
+    }
+  }
+
+  async function startExam(exam: ExamItem) {
+    setStudentStatus("Starting exam attempt...");
+    try {
+      const attempt = exam.attempt?.status === "in_progress"
+        ? exam.attempt
+        : await apiRequest<{ id: string; status: string }>(`/student/exams/${exam.id}/attempts`, {
+            method: "POST",
+            token: accessToken
+          });
+      const questionResponse = await apiRequest<{ items: ExamQuestionItem[] }>(`/student/exams/${exam.id}/questions`, {
+        token: accessToken
+      });
+      setActiveExam({
+        examId: exam.id,
+        attemptId: attempt.id,
+        questions: questionResponse.items,
+        answers: {}
+      });
+      setStudentKey((value) => value + 1);
+      setStudentStatus(`Exam opened: ${exam.title}`);
+    } catch (error) {
+      setStudentStatus(error instanceof Error ? error.message : "Unable to start exam");
+    }
+  }
+
+  async function openCourseDeck(courseId: string) {
+    setStudentStatus("Opening protected course presentation...");
+    try {
+      const metadata = await apiRequest<CourseDeck>(`/student/courses/${courseId}/deck`, {
+        token: accessToken
+      });
+      const blob = await downloadBlob(metadata.viewPath, accessToken);
+      const objectUrl = URL.createObjectURL(blob);
+      if (activeDeck?.objectUrl) {
+        URL.revokeObjectURL(activeDeck.objectUrl);
+      }
+      setActiveDeck({ metadata, objectUrl });
+      setStudentStatus("Course presentation opened inside the portal.");
+    } catch (error) {
+      setStudentStatus(error instanceof Error ? error.message : "Unable to open course presentation");
+    }
+  }
+
+  async function submitExamAnswers() {
+    if (!activeExam) {
+      return;
+    }
+    const answers = activeExam.questions
+      .map((question) => ({
+        questionId: question.id,
+        answer: activeExam.answers[question.id]?.trim() ?? ""
+      }))
+      .filter((answer) => answer.answer.length > 0);
+
+    if (answers.length === 0) {
+      setStudentStatus("Answer at least one question before submitting.");
+      return;
+    }
+
+    setStudentStatus("Submitting exam answers...");
+    try {
+      await apiRequest(`/student/exams/attempts/${activeExam.attemptId}/answers`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({ answers })
+      });
+      await apiRequest(`/student/exams/attempts/${activeExam.attemptId}/complete`, {
+        method: "PATCH",
+        token: accessToken
+      });
+      setActiveExam(null);
+      setStudentKey((value) => value + 1);
+      setStudentStatus("Exam submitted and completed.");
+    } catch (error) {
+      setStudentStatus(error instanceof Error ? error.message : "Unable to submit exam");
+    }
+  }
 
   return (
     <main className="dashboard">
       <DashboardHeader eyebrow="Student cockpit" title="Your learning command center" />
+      {studentStatus && <Notice tone="warning" title="Student action" text={studentStatus} />}
       {loading && <Skeleton text="Loading your academy progress..." />}
       {error && <Notice tone="warning" title="Dashboard not ready" text={error} />}
       {data && (
@@ -465,15 +666,37 @@ function StudentPage({ session }: { session: AuthSession | null }) {
                 <p>No courses are assigned yet. Once an admin enrolls you into a cohort and assigns courses, they will appear here.</p>
               ) : (
                 data.courses.items.map((course) => (
-                  <Row
-                    key={course.id}
-                    title={course.title}
-                    meta={`${course.modules} module(s), ${course.assignments} assignment(s), ${course.exams} exam(s)`}
-                    badge={`${course.durationWeeks} week(s)`}
-                  />
+                  <article className="admin-record" key={course.id}>
+                    <Row
+                      title={course.title}
+                      meta={`${course.modules} module(s), ${course.assignments} assignment(s), ${course.exams} exam(s)`}
+                      badge={`${course.durationWeeks} week(s)`}
+                    />
+                    <button className="secondary-action wide" type="button" onClick={() => openCourseDeck(course.id)}>
+                      Open protected course presentation
+                    </button>
+                  </article>
                 ))
               )}
             </DataCard>
+            {activeDeck && (
+              <DataCard title={activeDeck.metadata.title}>
+                <div className="deck-viewer">
+                  <iframe title={activeDeck.metadata.title} src={activeDeck.objectUrl} />
+                </div>
+                <div className="module-marker-list">
+                  {activeDeck.metadata.moduleMarkers.map((marker) => (
+                    <Row
+                      key={marker.moduleId}
+                      title={marker.name}
+                      meta={`Starts at slide ${marker.startSlide}`}
+                      badge={marker.endSlide ? `Ends ${marker.endSlide}` : "Final section"}
+                    />
+                  ))}
+                </div>
+                <p className="form-hint">This presentation is streamed through the academy portal without exposing a storage URL or download button.</p>
+              </DataCard>
+            )}
             <DataCard title="Next actions">
               {data.nextActions.length === 0 ? (
                 <p>No immediate actions. A rare quiet moment. Enjoy it responsibly.</p>
@@ -492,6 +715,89 @@ function StudentPage({ session }: { session: AuthSession | null }) {
                 ))
               )}
             </DataCard>
+            <DataCard title="Assignments to submit">
+              {assignments.loading && <Skeleton text="Loading assignments..." />}
+              {assignments.error && <Notice tone="warning" title="Assignments unavailable" text={assignments.error} />}
+              {assignments.data?.items.length === 0 && <p>No assignments are available yet.</p>}
+              {assignments.data?.items.map((assignment) => (
+                <article className="admin-record" key={assignment.id}>
+                  <Row
+                    title={assignment.title}
+                    meta={assignment.module?.title ?? "Module"}
+                    badge={assignment.submission ? "Submitted" : formatDate(assignment.dueDate)}
+                  />
+                  {assignment.submission ? (
+                    <p className="form-hint">
+                      Submitted {formatDate(assignment.submission.submittedAt)}. Grade: {assignment.submission.marks ?? "Pending"}.
+                    </p>
+                  ) : (
+                    <form className="mini-form no-divider" onSubmit={(event) => submitAssignment(event, assignment.id)}>
+                      <input name="file" type="file" required />
+                      <button className="primary-action wide" type="submit">Submit assignment</button>
+                    </form>
+                  )}
+                </article>
+              ))}
+            </DataCard>
+            <DataCard title="Exams to start">
+              {exams.loading && <Skeleton text="Loading exams..." />}
+              {exams.error && <Notice tone="warning" title="Exams unavailable" text={exams.error} />}
+              {exams.data?.items.length === 0 && <p>No exams are scheduled yet.</p>}
+              {exams.data?.items.map((exam) => (
+                <article className="admin-record" key={exam.id}>
+                  <Row
+                    title={exam.title}
+                    meta={`${exam.course?.title ?? "Course"} · ${formatDate(exam.startTime)} to ${formatDate(exam.endTime)}`}
+                    badge={exam.attempt?.status ?? exam.examType}
+                  />
+                  <button
+                    className="secondary-action wide"
+                    disabled={exam.attempt?.status === "completed" || exam.attempt?.status === "reviewed"}
+                    type="button"
+                    onClick={() => startExam(exam)}
+                  >
+                    {exam.attempt?.status === "in_progress" ? "Continue exam" : "Start exam"}
+                  </button>
+                </article>
+              ))}
+            </DataCard>
+            {activeExam && (
+              <DataCard title="Active exam questions">
+                {activeExam.questions.length === 0 ? (
+                  <p>No questions have been added to this exam yet.</p>
+                ) : (
+                  activeExam.questions.map((question) => (
+                    <label key={question.id}>
+                      {question.orderIndex}. {question.prompt} ({question.points} pts)
+                      {question.options?.length ? (
+                        <select
+                          value={activeExam.answers[question.id] ?? ""}
+                          onChange={(event) => setActiveExam({
+                            ...activeExam,
+                            answers: { ...activeExam.answers, [question.id]: event.target.value }
+                          })}
+                        >
+                          <option value="">Select answer</option>
+                          {question.options.map((option) => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <textarea
+                          rows={3}
+                          value={activeExam.answers[question.id] ?? ""}
+                          onChange={(event) => setActiveExam({
+                            ...activeExam,
+                            answers: { ...activeExam.answers, [question.id]: event.target.value }
+                          })}
+                        />
+                      )}
+                    </label>
+                  ))
+                )}
+                <button className="primary-action wide" type="button" onClick={submitExamAnswers}>Submit and complete exam</button>
+              </DataCard>
+            )}
           </section>
         </>
       )}
@@ -506,18 +812,14 @@ function AdminPage({ session }: { session: AuthSession | null }) {
   const [workspaceKey, setWorkspaceKey] = useState(0);
   const [selectedCohortId, setSelectedCohortId] = useState("");
   const [selectedCourseId, setSelectedCourseId] = useState("");
-  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [selectedTrainerId, setSelectedTrainerId] = useState("");
   const [adminStatus, setAdminStatus] = useState<string | null>(null);
   const applicationsPath = `/admin/applications?page=1&limit=20${statusFilter ? `&status=${statusFilter}` : ""}`;
   const overview = useAuthedData<AnalyticsOverview>(session, "/admin/analytics/overview");
   const applications = useAuthedData<ListResponse<ApplicationListItem>>(session, applicationsPath, applicationsKey);
   const cohorts = useAuthedData<ListResponse<CohortItem>>(session, "/admin/cohorts?page=1&limit=50", workspaceKey);
   const courses = useAuthedData<ListResponse<CourseItem>>(session, "/admin/courses?page=1&limit=50", workspaceKey);
-  const modules = useAuthedData<{ items: ModuleItem[] }>(
-    session && selectedCourseId ? session : null,
-    selectedCourseId ? `/admin/courses/${selectedCourseId}/modules` : "/admin/courses/no-course/modules",
-    workspaceKey
-  );
+  const trainers = useAuthedData<ListResponse<InternalUserItem>>(session, "/users/admin?role=trainer", workspaceKey);
 
   if (!session) {
     return null;
@@ -640,6 +942,25 @@ function AdminPage({ session }: { session: AuthSession | null }) {
     }
   }
 
+  async function assignTrainerToCourse() {
+    if (!selectedCourseId || !selectedTrainerId) {
+      setAdminStatus("Select both a course and a trainer first.");
+      return;
+    }
+    setAdminStatus("Assigning trainer to course...");
+    try {
+      await apiRequest(`/admin/courses/${selectedCourseId}/trainer`, {
+        method: "PATCH",
+        token: accessToken,
+        body: JSON.stringify({ trainerId: selectedTrainerId })
+      });
+      setWorkspaceKey((value) => value + 1);
+      setAdminStatus("Trainer assigned to course. The course now appears in the trainer portal.");
+    } catch (error) {
+      setAdminStatus(error instanceof Error ? error.message : "Unable to assign trainer");
+    }
+  }
+
   async function enrollApprovedApplication(applicationId: string) {
     if (!selectedCohortId) {
       setAdminStatus("Select a cohort before enrolling an approved applicant.");
@@ -660,118 +981,6 @@ function AdminPage({ session }: { session: AuthSession | null }) {
     }
   }
 
-  async function createModule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedCourseId) {
-      setAdminStatus("Select a course before creating a module.");
-      return;
-    }
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    setAdminStatus("Creating module...");
-    try {
-      await apiRequest(`/admin/courses/${selectedCourseId}/modules`, {
-        method: "POST",
-        token: accessToken,
-        body: JSON.stringify({
-          title: String(form.get("title")),
-          description: String(form.get("description")),
-          orderIndex: Number(form.get("orderIndex"))
-        })
-      });
-      formElement.reset();
-      setWorkspaceKey((value) => value + 1);
-      setAdminStatus("Module created.");
-    } catch (error) {
-      setAdminStatus(error instanceof Error ? error.message : "Unable to create module");
-    }
-  }
-
-  async function createAssignment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedModuleId) {
-      setAdminStatus("Select a module before creating an assignment.");
-      return;
-    }
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    setAdminStatus("Creating assignment...");
-    try {
-      await apiRequest(`/admin/assignments/modules/${selectedModuleId}`, {
-        method: "POST",
-        token: accessToken,
-        body: JSON.stringify({
-          title: String(form.get("title")),
-          description: String(form.get("description")),
-          dueDate: String(form.get("dueDate")),
-          totalMarks: Number(form.get("totalMarks"))
-        })
-      });
-      formElement.reset();
-      setAdminStatus("Assignment created and students notified.");
-    } catch (error) {
-      setAdminStatus(error instanceof Error ? error.message : "Unable to create assignment");
-    }
-  }
-
-  async function createExam(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedCourseId) {
-      setAdminStatus("Select a course before creating an exam.");
-      return;
-    }
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    setAdminStatus("Creating exam...");
-    try {
-      await apiRequest(`/admin/exams/courses/${selectedCourseId}`, {
-        method: "POST",
-        token: accessToken,
-        body: JSON.stringify({
-          title: String(form.get("title")),
-          examType: String(form.get("examType")),
-          description: String(form.get("description")),
-          startTime: String(form.get("startTime")),
-          endTime: String(form.get("endTime")),
-          totalMarks: Number(form.get("totalMarks")),
-          proctoringEnabled: form.get("proctoringEnabled") === "true"
-        })
-      });
-      formElement.reset();
-      setAdminStatus("Exam created and students notified.");
-    } catch (error) {
-      setAdminStatus(error instanceof Error ? error.message : "Unable to create exam");
-    }
-  }
-
-  async function createLiveSession(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedCourseId) {
-      setAdminStatus("Select a course before scheduling a live session.");
-      return;
-    }
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    setAdminStatus("Scheduling live session...");
-    try {
-      await apiRequest(`/admin/live-sessions/courses/${selectedCourseId}`, {
-        method: "POST",
-        token: accessToken,
-        body: JSON.stringify({
-          title: String(form.get("title")),
-          description: String(form.get("description")),
-          meetingLink: String(form.get("meetingLink")),
-          scheduledAt: String(form.get("scheduledAt")),
-          durationMinutes: Number(form.get("durationMinutes"))
-        })
-      });
-      formElement.reset();
-      setAdminStatus("Live session scheduled and students notified.");
-    } catch (error) {
-      setAdminStatus(error instanceof Error ? error.message : "Unable to schedule live session");
-    }
-  }
-
   return (
     <main className="dashboard admin-dashboard">
       <DashboardHeader eyebrow="Admin operations" title="Academy command center" />
@@ -788,7 +997,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
           ["overview", "Overview"],
           ["applications", "Applications"],
           ["cohorts", "Cohorts"],
-          ["learning", "Learning"],
+          ["courses", "Courses"],
           ["reports", "Reports"]
         ].map(([id, label]) => (
           <button
@@ -808,14 +1017,15 @@ function AdminPage({ session }: { session: AuthSession | null }) {
         <section className="admin-page-grid">
           <DataCard title="Workflow map">
             <Row title="1. Review applicants" meta="Open CVs, shortlist, approve, reject, and track interviews." badge="Applications" />
-            <Row title="2. Prepare academy structure" meta="Create cohorts and courses, then assign courses to cohorts." badge="Cohorts" />
+            <Row title="2. Prepare academy structure" meta="Create cohorts and courses, assign trainers, then attach courses to cohorts." badge="Cohorts" />
             <Row title="3. Enroll approved applicants" meta="Select a cohort, then enroll an approved applicant to convert them into a student." badge="Dependency" />
-            <Row title="4. Add learning activities" meta="Create modules first, then assignments, exams, and live sessions." badge="Learning" />
+            <Row title="4. Trainers build learning" meta="Assigned trainers create modules, materials, assignments, exams, questions, and live sessions." badge="Trainer" />
           </DataCard>
           <DataCard title="Current setup">
             <Row title="Applications" meta="Total applications currently visible to admin." badge={applications.data?.total ?? 0} />
             <Row title="Cohorts" meta="Cohorts available for enrollment and course assignment." badge={cohorts.data?.total ?? 0} />
-            <Row title="Courses" meta="Courses available to assign and build learning content." badge={courses.data?.total ?? 0} />
+            <Row title="Courses" meta="Courses available to assign to trainers and cohorts." badge={courses.data?.total ?? 0} />
+            <Row title="Trainers" meta="Internal trainer accounts available for course ownership." badge={trainers.data?.total ?? 0} />
           </DataCard>
         </section>
       )}
@@ -888,7 +1098,7 @@ function AdminPage({ session }: { session: AuthSession | null }) {
               </select>
               <select value={selectedCourseId} onChange={(event) => {
                 setSelectedCourseId(event.target.value);
-                setSelectedModuleId("");
+                setSelectedTrainerId("");
               }}>
                 <option value="">Select course</option>
                 {courses.data?.items.map((course) => (
@@ -913,89 +1123,50 @@ function AdminPage({ session }: { session: AuthSession | null }) {
               <button className="primary-action wide" type="submit">Create cohort</button>
             </form>
           </DataCard>
+        </section>
+      )}
+
+      {adminSection === "courses" && (
+        <section className="admin-page-grid">
+          <DataCard title="Assign trainer ownership">
+            <div className="section-intro">
+              <p>Admins create courses and assign a trainer. Trainers then build modules, materials, assignments, exams, questions, and live sessions from their own portal.</p>
+            </div>
+            <div className="selector-stack">
+              <select value={selectedCourseId} onChange={(event) => {
+                setSelectedCourseId(event.target.value);
+              }}>
+                <option value="">Select course</option>
+                {courses.data?.items.map((course) => (
+                  <option key={course.id} value={course.id}>{course.title}{course.trainer ? ` · ${course.trainer.firstName} ${course.trainer.lastName}` : " · unassigned"}</option>
+                ))}
+              </select>
+              <select value={selectedTrainerId} onChange={(event) => setSelectedTrainerId(event.target.value)}>
+                <option value="">Select trainer</option>
+                {trainers.data?.items.map((trainer) => (
+                  <option key={trainer.id} value={trainer.id}>{trainer.firstName} {trainer.lastName} ({trainer.email})</option>
+                ))}
+              </select>
+              <button disabled={!selectedCourseId || !selectedTrainerId} className="primary-action wide" type="button" onClick={assignTrainerToCourse}>Assign trainer to selected course</button>
+            </div>
+          </DataCard>
+          <DataCard title="Course ownership">
+            {courses.data?.items.length === 0 && <p>No courses have been created yet.</p>}
+            {courses.data?.items.map((course) => (
+              <Row
+                key={course.id}
+                title={course.title}
+                meta={`${course.durationWeeks} week(s) · ${course.description}`}
+                badge={course.trainer ? `${course.trainer.firstName} ${course.trainer.lastName}` : "Unassigned"}
+              />
+            ))}
+          </DataCard>
           <DataCard title="New course">
             <form className="mini-form no-divider" onSubmit={createCourse}>
               <input name="title" placeholder="Course title" required />
               <textarea name="description" placeholder="Course description, at least 10 characters" rows={4} required />
               <input name="durationWeeks" type="number" min="1" placeholder="Duration weeks" required />
               <button className="primary-action wide" type="submit">Create course</button>
-            </form>
-          </DataCard>
-        </section>
-      )}
-
-      {adminSection === "learning" && (
-        <section className="admin-page-grid">
-          <DataCard title="Select learning context">
-            <div className="section-intro">
-              <p>Create modules under a course first. Assignments require a module; exams and live sessions require a course.</p>
-            </div>
-            <div className="selector-stack">
-              <select value={selectedCourseId} onChange={(event) => {
-                setSelectedCourseId(event.target.value);
-                setSelectedModuleId("");
-              }}>
-                <option value="">Select course</option>
-                {courses.data?.items.map((course) => (
-                  <option key={course.id} value={course.id}>{course.title}</option>
-                ))}
-              </select>
-              <select value={selectedModuleId} onChange={(event) => setSelectedModuleId(event.target.value)}>
-                <option value="">Select module</option>
-                {modules.data?.items.map((module) => (
-                  <option key={module.id} value={module.id}>{module.title}</option>
-                ))}
-              </select>
-            </div>
-          </DataCard>
-          <DataCard title="Module">
-            <form className="mini-form no-divider" onSubmit={createModule}>
-              <input name="title" placeholder="Module title" required />
-              <textarea name="description" placeholder="Module description, at least 10 characters" rows={4} required />
-              <input name="orderIndex" type="number" min="1" placeholder="Order index" required />
-              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create module</button>
-            </form>
-          </DataCard>
-          <DataCard title="Assignment">
-            <form className="mini-form no-divider" onSubmit={createAssignment}>
-              <input name="title" placeholder="Assignment title" required />
-              <textarea name="description" placeholder="Assignment description, at least 10 characters" rows={4} required />
-              <input name="dueDate" type="datetime-local" required />
-              <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
-              <button disabled={!selectedModuleId} className="primary-action wide" type="submit">Create assignment</button>
-            </form>
-          </DataCard>
-          <DataCard title="Exam">
-            <form className="mini-form no-divider" onSubmit={createExam}>
-              <input name="title" placeholder="Exam title" required />
-              <select name="examType" defaultValue="quiz">
-                <option value="entry">Entry</option>
-                <option value="quiz">Quiz</option>
-                <option value="mid_program">Mid-program</option>
-                <option value="final">Final</option>
-                <option value="project">Project</option>
-              </select>
-              <textarea name="description" placeholder="Exam description, at least 10 characters" rows={4} required />
-              <div className="two-column">
-                <input name="startTime" type="datetime-local" required />
-                <input name="endTime" type="datetime-local" required />
-              </div>
-              <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
-              <select name="proctoringEnabled" defaultValue="true">
-                <option value="true">Proctoring enabled</option>
-                <option value="false">Proctoring disabled</option>
-              </select>
-              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create exam</button>
-            </form>
-          </DataCard>
-          <DataCard title="Live session">
-            <form className="mini-form no-divider" onSubmit={createLiveSession}>
-              <input name="title" placeholder="Session title" required />
-              <textarea name="description" placeholder="Session description, at least 10 characters" rows={4} required />
-              <input name="meetingLink" placeholder="https://teams.microsoft.com/..." required />
-              <input name="scheduledAt" type="datetime-local" required />
-              <input name="durationMinutes" type="number" min="1" placeholder="Duration minutes" required />
-              <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Schedule session</button>
             </form>
           </DataCard>
         </section>
@@ -1046,21 +1217,401 @@ function ExecutivePage({ session }: { session: AuthSession | null }) {
   );
 }
 
-function TrainerPage() {
+function TrainerPage({ session }: { session: AuthSession | null }) {
+  const [trainerKey, setTrainerKey] = useState(0);
+  const [selectedCourseId, setSelectedCourseId] = useState("");
+  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [selectedExamId, setSelectedExamId] = useState("");
+  const [trainerStatus, setTrainerStatus] = useState<string | null>(null);
+  const courses = useAuthedData<ListResponse<CourseItem>>(session, "/trainer/courses", trainerKey);
+  const modules = useAuthedData<ListResponse<ModuleItem>>(
+    session && selectedCourseId ? session : null,
+    selectedCourseId ? `/trainer/courses/${selectedCourseId}/modules` : "/trainer/courses/no-course/modules",
+    trainerKey
+  );
+  const assignments = useAuthedData<ListResponse<AssignmentItem>>(
+    session && selectedModuleId ? session : null,
+    selectedModuleId ? `/trainer/assignments/modules/${selectedModuleId}` : "/trainer/assignments/modules/no-module",
+    trainerKey
+  );
+  const exams = useAuthedData<ListResponse<ExamItem>>(
+    session && selectedCourseId ? session : null,
+    selectedCourseId ? `/trainer/exams/courses/${selectedCourseId}` : "/trainer/exams/courses/no-course",
+    trainerKey
+  );
+  const questions = useAuthedData<ListResponse<ExamQuestionItem>>(
+    session && selectedExamId ? session : null,
+    selectedExamId ? `/trainer/exams/${selectedExamId}/questions` : "/trainer/exams/no-exam/questions",
+    trainerKey
+  );
+  const sessions = useAuthedData<ListResponse<LiveSessionItem>>(
+    session && selectedCourseId ? session : null,
+    selectedCourseId ? `/trainer/live-sessions/courses/${selectedCourseId}` : "/trainer/live-sessions/courses/no-course",
+    trainerKey
+  );
+
+  if (!session) {
+    return null;
+  }
+  const accessToken = session.accessToken;
+
+  async function createTrainerModule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setTrainerStatus("Select one of your assigned courses first.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setTrainerStatus("Creating module...");
+    try {
+      await apiRequest(`/trainer/courses/${selectedCourseId}/modules`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          orderIndex: Number(form.get("orderIndex"))
+        })
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Module created.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to create module");
+    }
+  }
+
+  async function uploadMaterial(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedModuleId) {
+      setTrainerStatus("Select a module before uploading material.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setTrainerStatus("Uploading learning material...");
+    try {
+      await apiRequest(`/trainer/courses/modules/${selectedModuleId}/materials`, {
+        method: "POST",
+        token: accessToken,
+        body: form
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Learning material uploaded.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to upload material");
+    }
+  }
+
+  async function uploadCourseDeck(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setTrainerStatus("Select a course before uploading the master presentation.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const moduleLines = String(form.get("moduleLines") ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const modules = moduleLines.map((line) => {
+      const [namePart, slidePart] = line.split("|").map((part) => part.trim());
+      return {
+        name: namePart,
+        startSlide: Number(slidePart)
+      };
+    });
+
+    if (modules.length === 0 || modules.some((module) => !module.name || !Number.isInteger(module.startSlide))) {
+      setTrainerStatus("Use one module per line, for example: Banking foundations | 1");
+      return;
+    }
+
+    form.delete("moduleLines");
+    form.set("modulesJson", JSON.stringify(modules));
+    setTrainerStatus("Uploading protected course presentation...");
+    try {
+      await apiRequest(`/trainer/courses/${selectedCourseId}/deck`, {
+        method: "POST",
+        token: accessToken,
+        body: form
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Course presentation uploaded. Modules were created or updated from the slide markers.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to upload course presentation");
+    }
+  }
+
+
+  async function createTrainerAssignment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedModuleId) {
+      setTrainerStatus("Select a module before creating an assignment.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setTrainerStatus("Creating assignment...");
+    try {
+      await apiRequest(`/trainer/assignments/modules/${selectedModuleId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          dueDate: String(form.get("dueDate")),
+          totalMarks: Number(form.get("totalMarks"))
+        })
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Assignment created and students notified.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to create assignment");
+    }
+  }
+
+  async function createTrainerExam(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setTrainerStatus("Select a course before creating an exam.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setTrainerStatus("Creating exam...");
+    try {
+      await apiRequest(`/trainer/exams/courses/${selectedCourseId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          examType: String(form.get("examType")),
+          description: String(form.get("description")),
+          startTime: String(form.get("startTime")),
+          endTime: String(form.get("endTime")),
+          totalMarks: Number(form.get("totalMarks")),
+          proctoringEnabled: form.get("proctoringEnabled") === "true"
+        })
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Exam created and students notified.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to create exam");
+    }
+  }
+
+  async function createExamQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedExamId) {
+      setTrainerStatus("Select an exam before adding a question.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const options = String(form.get("options") ?? "")
+      .split("\n")
+      .map((option) => option.trim())
+      .filter(Boolean);
+    setTrainerStatus("Adding question...");
+    try {
+      await apiRequest(`/trainer/exams/${selectedExamId}/questions`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          questionType: String(form.get("questionType")),
+          prompt: String(form.get("prompt")),
+          options: options.length > 0 ? options : undefined,
+          correctAnswer: String(form.get("correctAnswer") ?? ""),
+          points: Number(form.get("points")),
+          orderIndex: Number(form.get("orderIndex"))
+        })
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Question added.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to add question");
+    }
+  }
+
+  async function createTrainerLiveSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCourseId) {
+      setTrainerStatus("Select a course before scheduling a live session.");
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setTrainerStatus("Scheduling live session...");
+    try {
+      await apiRequest(`/trainer/live-sessions/courses/${selectedCourseId}`, {
+        method: "POST",
+        token: accessToken,
+        body: JSON.stringify({
+          title: String(form.get("title")),
+          description: String(form.get("description")),
+          meetingLink: String(form.get("meetingLink")),
+          scheduledAt: String(form.get("scheduledAt")),
+          durationMinutes: Number(form.get("durationMinutes"))
+        })
+      });
+      formElement.reset();
+      setTrainerKey((value) => value + 1);
+      setTrainerStatus("Live session scheduled and students notified.");
+    } catch (error) {
+      setTrainerStatus(error instanceof Error ? error.message : "Unable to schedule session");
+    }
+  }
+
   return (
-    <main className="dashboard">
-      <DashboardHeader eyebrow="Trainer workspace" title="Facilitation tools are next in line" />
-      <section className="content-grid">
-        <DataCard title="Current access">
-          <p>
-            Trainer accounts are now routed correctly. Dedicated trainer endpoints are not built yet,
-            so this workspace is a placeholder for course facilitation, attendance support, and grading views.
-          </p>
+    <main className="dashboard admin-dashboard">
+      <DashboardHeader eyebrow="Trainer studio" title="Build the learning experience" />
+      {trainerStatus && <Notice tone="warning" title="Trainer action" text={trainerStatus} />}
+      <section className="metric-grid four">
+        <Metric label="Assigned courses" value={courses.data?.total ?? 0} />
+        <Metric label="Modules" value={modules.data?.total ?? 0} />
+        <Metric label="Assignments" value={assignments.data?.total ?? 0} />
+        <Metric label="Exams" value={exams.data?.total ?? 0} />
+      </section>
+      <section className="admin-page-grid">
+        <DataCard title="Assigned courses">
+          {courses.loading && <Skeleton text="Loading your courses..." />}
+          {courses.error && <Notice tone="warning" title="Courses unavailable" text={courses.error} />}
+          {courses.data?.items.length === 0 && <p>No course has been assigned to you yet. Ask an admin to assign one from Admin → Courses.</p>}
+          <div className="selector-stack">
+            <select value={selectedCourseId} onChange={(event) => {
+              setSelectedCourseId(event.target.value);
+              setSelectedModuleId("");
+              setSelectedExamId("");
+            }}>
+              <option value="">Select assigned course</option>
+              {courses.data?.items.map((course) => (
+                <option key={course.id} value={course.id}>{course.title}</option>
+              ))}
+            </select>
+            <select value={selectedModuleId} onChange={(event) => setSelectedModuleId(event.target.value)}>
+              <option value="">Select module</option>
+              {modules.data?.items.map((module) => (
+                <option key={module.id} value={module.id}>{module.orderIndex}. {module.title}</option>
+              ))}
+            </select>
+            <select value={selectedExamId} onChange={(event) => setSelectedExamId(event.target.value)}>
+              <option value="">Select exam</option>
+              {exams.data?.items.map((exam) => (
+                <option key={exam.id} value={exam.id}>{exam.title}</option>
+              ))}
+            </select>
+          </div>
         </DataCard>
-        <DataCard title="Coming next">
-          <Row title="Assigned courses" meta="Trainer-specific course list" badge="Next" />
-          <Row title="Live sessions" meta="Sessions the trainer facilitates" badge="Next" />
-          <Row title="Grading queue" meta="Assignments and subjective answers to mark" badge="Next" />
+        <DataCard title="Create module">
+          <form className="mini-form no-divider" onSubmit={createTrainerModule}>
+            <input name="title" placeholder="Module title" required />
+            <textarea name="description" placeholder="Module description, at least 10 characters" rows={4} required />
+            <input name="orderIndex" type="number" min="1" placeholder="Order index" required />
+            <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create module</button>
+          </form>
+        </DataCard>
+        <DataCard title="Full course presentation">
+          <div className="section-intro">
+            <p>Upload one master PPT/PPTX/PDF and define where each module starts. Students view it inside the portal; raw storage links are not exposed.</p>
+          </div>
+          <form className="mini-form no-divider" onSubmit={uploadCourseDeck}>
+            <input name="title" placeholder="Presentation title" />
+            <input name="file" type="file" accept=".ppt,.pptx,.pdf" required />
+            <textarea
+              name="moduleLines"
+              placeholder={"Banking foundations | 1\nRisk and compliance | 12\nCase practice | 24"}
+              rows={5}
+              required
+            />
+            <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Upload protected course deck</button>
+          </form>
+        </DataCard>
+        <DataCard title="Upload learning material">
+          <form className="mini-form no-divider" onSubmit={uploadMaterial}>
+            <input name="title" placeholder="Material title" required />
+            <select name="type" defaultValue="pdf">
+              <option value="pdf">PDF</option>
+              <option value="ppt">PPT</option>
+              <option value="video">Video</option>
+              <option value="document">Document</option>
+            </select>
+            <input name="file" type="file" required />
+            <button disabled={!selectedModuleId} className="primary-action wide" type="submit">Upload material</button>
+          </form>
+        </DataCard>
+        <DataCard title="Create assignment">
+          <form className="mini-form no-divider" onSubmit={createTrainerAssignment}>
+            <input name="title" placeholder="Assignment title" required />
+            <textarea name="description" placeholder="Assignment description, at least 10 characters" rows={4} required />
+            <input name="dueDate" type="datetime-local" required />
+            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+            <button disabled={!selectedModuleId} className="primary-action wide" type="submit">Create assignment</button>
+          </form>
+        </DataCard>
+        <DataCard title="Create exam">
+          <form className="mini-form no-divider" onSubmit={createTrainerExam}>
+            <input name="title" placeholder="Exam title" required />
+            <select name="examType" defaultValue="quiz">
+              <option value="entry">Entry</option>
+              <option value="quiz">Quiz</option>
+              <option value="mid_program">Mid-program</option>
+              <option value="final">Final</option>
+              <option value="project">Project</option>
+            </select>
+            <textarea name="description" placeholder="Exam description, at least 10 characters" rows={4} required />
+            <div className="two-column">
+              <input name="startTime" type="datetime-local" required />
+              <input name="endTime" type="datetime-local" required />
+            </div>
+            <input name="totalMarks" type="number" min="1" placeholder="Total marks" required />
+            <select name="proctoringEnabled" defaultValue="true">
+              <option value="true">Proctoring enabled</option>
+              <option value="false">Proctoring disabled</option>
+            </select>
+            <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Create exam</button>
+          </form>
+        </DataCard>
+        <DataCard title="Add question to exam">
+          <form className="mini-form no-divider" onSubmit={createExamQuestion}>
+            <select name="questionType" defaultValue="multiple_choice">
+              <option value="multiple_choice">Multiple choice</option>
+              <option value="true_false">True / false</option>
+              <option value="short_answer">Short answer</option>
+              <option value="essay">Essay</option>
+            </select>
+            <textarea name="prompt" placeholder="Question prompt, at least 10 characters" rows={4} required />
+            <textarea name="options" placeholder="Options, one per line for multiple choice or true/false" rows={3} />
+            <input name="correctAnswer" placeholder="Correct answer for objective questions" />
+            <div className="two-column">
+              <input name="points" type="number" min="1" placeholder="Points" required />
+              <input name="orderIndex" type="number" min="1" placeholder="Order" required />
+            </div>
+            <button disabled={!selectedExamId} className="primary-action wide" type="submit">Add question</button>
+          </form>
+          {questions.data?.items.map((question) => (
+            <Row key={question.id} title={question.prompt} meta={question.questionType} badge={`${question.points} pts`} />
+          ))}
+        </DataCard>
+        <DataCard title="Schedule live session">
+          <form className="mini-form no-divider" onSubmit={createTrainerLiveSession}>
+            <input name="title" placeholder="Session title" required />
+            <textarea name="description" placeholder="Session description, at least 10 characters" rows={4} required />
+            <input name="meetingLink" placeholder="https://teams.microsoft.com/..." required />
+            <input name="scheduledAt" type="datetime-local" required />
+            <input name="durationMinutes" type="number" min="1" placeholder="Duration minutes" required />
+            <button disabled={!selectedCourseId} className="primary-action wide" type="submit">Schedule session</button>
+          </form>
+          {sessions.data?.items.map((session) => (
+            <Row key={session.id} title={session.title} meta={session.meetingLink} badge={formatDate(session.scheduledAt)} />
+          ))}
         </DataCard>
       </section>
     </main>

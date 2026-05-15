@@ -72,6 +72,21 @@ export async function downloadText(path: string, token: string): Promise<string>
   return response.text();
 }
 
+export async function downloadBlob(path: string, token: string): Promise<Blob> {
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    const details = await parseError(response);
+    throw new ApiError(details.error ?? "Download failed", response.status, details);
+  }
+
+  return response.blob();
+}
+
 export function login(email: string, password: string): Promise<AuthSession> {
   return apiRequest<AuthSession>("/auth/login", {
     method: "POST",
